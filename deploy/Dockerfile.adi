@@ -41,6 +41,11 @@ FROM ${UPSTREAM_IMAGE} AS adi
 ARG ADI_USER
 # Fail the build early if ADI_USER is unset
 RUN test -n "$ADI_USER" || (echo "ERROR: ADI_USER build arg is required (shane|meg)" >&2 && exit 1)
+# Promote ADI_USER from build-arg to runtime env so entrypoint.sh can
+# branch deterministically (e.g. Shane runs CLIProxyAPI, Meg doesn't).
+# Without this, the entrypoint's USER.md-grep fallback misfires on Meg
+# because her USER.md mentions "Shane" in family context.
+ENV ADI_USER=${ADI_USER}
 
 USER root
 

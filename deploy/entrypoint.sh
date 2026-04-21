@@ -153,12 +153,20 @@ fi
 if [[ -n "${TAILSCALE_AUTHKEY:-}" ]]; then
   if [[ -x /usr/local/bin/tailscaled && -x /usr/local/bin/tailscale ]]; then
     tailscale_hostname="adi-${ADI_USER:-unknown}"
+    # --outbound-http-proxy-listen binds a local HTTP proxy on loopback
+    # that routes outbound HTTP(S) connections THROUGH the tailnet.
+    # Required when running userspace-networking: without a proxy, host
+    # apps can't reach 100.x.x.x tailnet IPs at all — normal sockets
+    # don't see the tailnet. openclaw picks this up via HTTP_PROXY /
+    # HTTPS_PROXY env vars (set later in this entrypoint for Meg only).
     log "starting tailscaled (userspace mode, hostname=${tailscale_hostname})"
     /usr/local/bin/tailscaled \
       --tun=userspace-networking \
       --state="$TAILSCALE_STATE" \
       --socket="$TAILSCALE_SOCKET" \
       --statedir="$TAILSCALE_DIR" \
+      --outbound-http-proxy-listen=127.0.0.1:1055 \
+      --socks5-server=127.0.0.1:1056 \
       >> "$TAILSCALE_LOG" 2>&1 &
     TAILSCALED_PID=$!
     log "tailscaled pid=$TAILSCALED_PID (logs: $TAILSCALE_LOG)"
@@ -179,6 +187,13 @@ if [[ -n "${TAILSCALE_AUTHKEY:-}" ]]; then
       # is silently ignored. Accept-routes=false because we don't want
       # Meg's box routing arbitrary subnets through Shane's box (or
       # vice versa); only direct node-to-node traffic is in scope.
+      # --accept-dns=true is REQUIRED: without it, tailscaled's outbound
+      # HTTP proxy can't resolve MagicDNS names like
+      # adi-shane.springhare-typhon.ts.net because the container's
+      # resolver points at Fly's DNS which doesn't know .ts.net. With
+      # accept-dns, tailscaled installs itself as a resolver and forwards
+      # non-tailnet queries upstream, so Anthropic/Slack/Telegram still
+      # resolve normally.
       if /usr/local/bin/tailscale \
           --socket="$TAILSCALE_SOCKET" \
           up \
@@ -186,10 +201,26 @@ if [[ -n "${TAILSCALE_AUTHKEY:-}" ]]; then
           --hostname="$tailscale_hostname" \
           --advertise-tags=tag:fly-gw \
           --accept-routes=false \
-          --accept-dns=false \
+          --accept-dns=true \
           --reset >> "$TAILSCALE_LOG" 2>&1; then
         tailnet_ip="$(/usr/local/bin/tailscale --socket="$TAILSCALE_SOCKET" ip -4 2>/dev/null | head -n1 || true)"
         log "tailscale up OK (tailnet_ip=${tailnet_ip:-unknown})"
+
+        # Meg's openclaw needs to reach Shane's CLIProxyAPI over the
+        # tailnet. In userspace-networking mode, that REQUIRES routing
+        # through tailscaled's outbound HTTP proxy. Setting HTTP_PROXY
+        # globally on Shane's box would route HIS outbound traffic
+        # (Slack API, Anthropic fallback, etc) through his own tailnet
+        # proxy — unnecessary and slower. So only set on Meg.
+        #
+        # Note: NO_PROXY excludes Fly's internal addresses (loopback for
+        # Meg's own gateway, Fly's private 6PN, etc.) from proxying.
+        if [[ "${ADI_USER:-}" == "meg" ]]; then
+          export HTTP_PROXY="http://127.0.0.1:1055"
+          export HTTPS_PROXY="http://127.0.0.1:1055"
+          export NO_PROXY="127.0.0.1,localhost,::1,*.fly.dev,fly.dev,*.internal,*.flycast"
+          log "set HTTP(S)_PROXY to tailnet proxy (adi-meg routes inference through adi-shane)"
+        fi
       else
         log "WARN: tailscale up failed — see $TAILSCALE_LOG; continuing without tailnet"
       fi
