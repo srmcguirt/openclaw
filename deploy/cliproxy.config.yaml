@@ -1,0 +1,70 @@
+# deploy/cliproxy.config.yaml — base CLIProxyAPI config seeded to the volume on first boot.
+#
+# This file is COPIED into /data/cliproxy/config.yaml on first boot by the
+# entrypoint. After that, the volume copy is authoritative — edit it with
+# `fly ssh console` when you need to add accounts, rotate API keys, etc.
+#
+# OAuth tokens live at /data/cliproxy/auth/ (per auth-dir below). They
+# persist across redeploys because the volume persists.
+
+# Default: bind to loopback only. The proxy is a sidecar — only openclaw
+# in the same container should reach it. Never expose CLIProxyAPI to the
+# public internet; its OAuth-backed free-tier access is easy to abuse.
+#
+# EXCEPTION for the family relay: On Shane's box (ADI_USER=shane), the
+# entrypoint rewrites this to "0.0.0.0" AFTER the first-boot seed so
+# Meg's adi-meg Fly machine can reach it over the Tailscale interface
+# (tcp/8317). Auth is enforced by the `api-keys` list below; Tailscale
+# ACLs (deploy/tailscale-acl.json) are defense-in-depth.
+#
+# Meg's box (ADI_USER=meg) does not run this sidecar at all — her
+# openclaw.meg.json points `cliproxy.baseUrl` at Shane's tailnet URL
+# instead of loopback. If you revert her to a local sidecar later
+# (e.g. if she gets her own Claude.ai OAuth), undo that baseUrl
+# change first.
+host: "127.0.0.1"
+port: 8317
+
+tls:
+  enable: false
+
+remote-management:
+  # Localhost-only management. Still requires the secret-key below.
+  allow-remote: false
+  # The management key is injected at first-boot from the CLIPROXY_MGMT_KEY
+  # env var (Fly secret). If empty, the entrypoint generates a random one
+  # and writes it back into this file.
+  secret-key: ""
+  disable-control-panel: true
+
+# OAuth tokens (Claude.ai, ChatGPT, Gemini) are stored here. This is the
+# directory you back up or rsync if you want to preserve logged-in sessions
+# across a volume wipe.
+auth-dir: "/data/cliproxy/auth"
+
+# API keys that openclaw (and anything else on loopback) uses to call this
+# proxy. One key is fine for a single-user setup. The entrypoint generates
+# a random key on first boot from CLIPROXY_API_KEY (Fly secret) and writes
+# it here.
+api-keys: []
+
+debug: false
+
+pprof:
+  enable: false
+
+commercial-mode: false
+
+logging-to-file: true
+logs-max-total-size-mb: 100
+error-logs-max-files: 5
+
+usage-statistics-enabled: true
+
+proxy-url: ""
+force-model-prefix: false
+passthrough-headers: false
+
+# Retry policy — reasonable defaults for an OAuth-backed proxy which
+# occasionally rate-limits or rotates tokens.
+retry-count: 3

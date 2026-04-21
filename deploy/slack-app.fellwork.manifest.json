@@ -1,0 +1,126 @@
+{
+  "_comment": "Adi — Fellwork workspace Slack app manifest. Create a new Slack app from this manifest in the Fellwork workspace. Paired with deploy/slack-app.broadnax.manifest.json (shared primitives, workspace-specific extras).",
+  "display_information": {
+    "name": "Adi",
+    "description": "Slack connector for Adi — Shane's Fellwork-facing assistant",
+    "background_color": "#c55100",
+    "long_description": "Adi is a Slack-based operations and execution interface for OpenClaw that helps Shane run work across communication, task management, and coding workflows without constant context switching. In the Fellwork workspace, Adi is tuned for company operations: Fellwork Rust crates and Supabase monitoring, Alive Church pastoral-adjacent writing, Regent coursework support, and day-to-day task orchestration. She captures requests, drafts actions, tracks progress, and reports outcomes in a structured way that is easy to scan.\r\n\r\nAs an OpenClaw interface, Adi connects conversational requests in Slack to real tool execution, moving from plan to done in the same flow. She is proactive but controlled: she performs safe internal operations automatically, asks before sensitive external actions, and maintains continuity through persistent memory and repository-backed context. Her pastoral and intercessory confidentiality rules are strict — ministry content is not cross-referenced, names are not indexed into general memory, and outbound communications are only drafted for review, never sent autonomously."
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "Adi",
+      "always_online": true
+    },
+    "slash_commands": [
+      {
+        "command": "/adi",
+        "description": "Chat with Adi",
+        "should_escape": false
+      },
+      {
+        "command": "/adi-task",
+        "description": "Create a Todoist task via Adi",
+        "usage_hint": "[task description with optional Todoist quick-add syntax]",
+        "should_escape": false
+      },
+      {
+        "command": "/adi-note",
+        "description": "Capture a note to your second brain",
+        "usage_hint": "[note text]",
+        "should_escape": false
+      },
+      {
+        "command": "/adi-brief",
+        "description": "On-demand daily brief",
+        "should_escape": false
+      },
+      {
+        "command": "/adi-who",
+        "description": "Look up a person from your second brain",
+        "usage_hint": "[name]",
+        "should_escape": false
+      },
+      {
+        "command": "/adi-fellwork",
+        "description": "Fellwork company operations: status, Supabase health, recent activity",
+        "usage_hint": "[status|supabase|recent|crates|ci]",
+        "should_escape": false
+      },
+      {
+        "command": "/adi-ministry",
+        "description": "Alive pastoral writing and intercessory prayer drafting (confidentiality-heavy)",
+        "usage_hint": "[draft|pray|comms]",
+        "should_escape": false
+      },
+      {
+        "command": "/adi-regent",
+        "description": "Regent coursework: discussion posts, citation help, reading notes",
+        "usage_hint": "[bibl|gene|engl] [subcommand]",
+        "should_escape": false
+      }
+    ]
+  },
+  "oauth_config": {
+    "scopes": {
+      "user": [
+        "chat:write",
+        "search:read.public"
+      ],
+      "bot": [
+        "app_mentions:read",
+        "assistant:write",
+        "channels:history",
+        "channels:read",
+        "channels:join",
+        "chat:write",
+        "commands",
+        "emoji:read",
+        "files:read",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "mpim:history",
+        "mpim:read",
+        "mpim:write",
+        "pins:read",
+        "pins:write",
+        "reactions:read",
+        "reactions:write",
+        "users:read"
+      ]
+    },
+    "pkce_enabled": false
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "app_mention",
+        "channel_rename",
+        "member_joined_channel",
+        "member_left_channel",
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "message.mpim",
+        "pin_added",
+        "pin_removed",
+        "reaction_added",
+        "reaction_removed"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false,
+    "is_mcp_enabled": false
+  }
+}

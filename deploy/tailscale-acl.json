@@ -1,0 +1,139 @@
+// deploy/tailscale-acl.json — Tailscale ACL for the Adi family tailnet.
+//
+// HOW TO USE:
+//   1. Create a Tailscale tailnet if you don't have one (tailscale.com → Admin).
+//   2. Admin console → Access Controls → paste the JSON below (with comments
+//      stripped — Tailscale's editor accepts HuJSON, which allows comments,
+//      but it's safer to strip them before paste).
+//   3. Save. Tailscale validates the syntax on save and refuses invalid ACLs
+//      rather than leaving your tailnet open.
+//
+// WHAT IT DOES:
+//   - Creates `tag:fly-gw` for the two Fly machines (adi-shane, adi-meg).
+//   - Rule 1: meg's gateway can reach shane's gateway ONLY on tcp/8317
+//            (the CLIProxyAPI sidecar port for model inference).
+//   - Rule 2: shane's gateway can reach meg's gateway ONLY on tcp/3000
+//            (the openclaw gateway port, so Adi-on-Shane's-box can query
+//            Meg's Adi's status/sessions/health via its full operator token).
+//   - Admin hatch (autogroup:admin): your tailnet-owner account can reach
+//            tag:fly-gw nodes on ALL ports. This is for emergency debugging
+//            from your laptop IF you ever add it to the tailnet. By default
+//            no personal devices are in the tailnet (just the two Fly
+//            machines), so this rule is dormant until you opt in by joining
+//            a laptop/phone to the tailnet.
+//   - Everything else is DENIED. Tailscale ACLs are default-deny once you
+//            supply any `acls` block.
+//
+// WHAT IT DOES NOT DO:
+//   - No Tailscale SSH (per Shane's decision 3a).
+//   - No exit-node routing between the two gateways.
+//   - No subnet routing (neither gateway advertises Fly's private network).
+//   - No ACL rule for meg → shane on any port other than 8317. If you later
+//     need Meg's box to call Shane's for something else (e.g. a shared
+//     Supabase proxy on a different port), add a new rule — do not widen
+//     the 8317 rule to include more ports.
+//
+// CHANGE MANAGEMENT:
+//   - Tailscale shows a diff before apply. Read it.
+//   - Breaking this ACL breaks the inference relay — Meg's Adi will fail
+//     over to her Anthropic API fallback (see openclaw.meg.json).
+//   - Rotate the auth keys (not defined here; see tagOwners below) by
+//     minting a new key in the Tailscale admin and updating the
+//     TAILSCALE_AUTHKEY Fly secret on the affected app.
+{
+  // ─── Tag ownership ─────────────────────────────────────────────────
+  // Only members of autogroup:admin (= tailnet owners) can mint nodes
+  // with tag:fly-gw. This prevents a compromised non-admin user from
+  // adding a rogue "fly-gw" node to the tailnet and suddenly getting
+  // reach into Shane's CLIProxyAPI.
+  "tagOwners": {
+    "tag:fly-gw": ["autogroup:admin"]
+  },
+
+  // ─── Host aliases (optional but nice) ──────────────────────────────
+  // Not strictly needed — MagicDNS resolves `adi-shane.<tailnet>.ts.net`
+  // automatically — but making aliases explicit here documents intent.
+  // Uncomment and fill in real Tailnet IPs after first boot if you want
+  // to reference by short name. Leaving commented keeps the ACL working
+  // with pure MagicDNS from day one.
+  //
+  // "hosts": {
+  //   "shane-gw": "100.x.x.x",
+  //   "meg-gw":   "100.x.x.x"
+  // },
+
+  // ─── ACL rules ─────────────────────────────────────────────────────
+  "acls": [
+    // Rule 1: Meg → Shane, model inference only.
+    // Meg's openclaw gateway sends HTTP requests to Shane's CLIProxyAPI
+    // sidecar on port 8317. Responses flow back on the same TCP
+    // connection — no reverse rule needed.
+    {
+      "action": "accept",
+      "src": ["tag:fly-gw"],
+      "dst": ["tag:fly-gw:8317"],
+      // Optional narrowing: restrict src to meg's specific hostname so a
+      // future third fly-gw node can't send inference traffic at Shane's
+      // box without an explicit rule. Uncomment when/if you add a third
+      // household member.
+      // "srcHosts": ["meg-gw"]
+    },
+
+    // Rule 2: Shane → Meg, status tooling only.
+    // Adi-on-Shane's-box holds Meg's OPENCLAW_GATEWAY_TOKEN and queries
+    // Meg's gateway for health/sessions/channel status. Port 3000 is the
+    // openclaw gateway's WS+HTTP multiplex (see deploy/fly.meg.toml
+    // internal_port = 3000).
+    {
+      "action": "accept",
+      "src": ["tag:fly-gw"],
+      "dst": ["tag:fly-gw:3000"]
+    },
+
+    // Rule 3: Admin hatch.
+    // Your tailnet owner identity (autogroup:admin) can reach both
+    // gateways on ALL ports for emergency debugging. Dormant until you
+    // join a personal device to the tailnet. When you do, that device
+    // inherits admin rights — so only join devices you directly trust.
+    {
+      "action": "accept",
+      "src": ["autogroup:admin"],
+      "dst": ["tag:fly-gw:*"]
+    }
+  ],
+
+  // ─── SSH ─────────────────────────────────────────────────────────
+  // Tailscale SSH is disabled by Shane's decision (3a). Use `fly ssh
+  // console -a adi-shane` / `-a adi-meg` for shell access instead.
+  // An empty ssh block means no Tailscale SSH is permitted.
+  "ssh": [],
+
+  // ─── Node attributes ───────────────────────────────────────────────
+  // Funnel (public HTTPS via Tailscale) is explicitly off. The whole
+  // point of this setup is private mesh, not public exposure.
+  "nodeAttrs": [
+    {
+      "target": ["tag:fly-gw"],
+      "attr":   ["funnel"]
+    }
+  ],
+
+  // ─── Tests ─────────────────────────────────────────────────────────
+  // Tailscale runs these on ACL save; they fail the save if the ACL
+  // doesn't grant/deny what you asserted. Cheap insurance against the
+  // "I thought I wrote a rule that did X" class of bug.
+  "tests": [
+    {
+      "src": "tag:fly-gw",
+      "accept": [
+        "tag:fly-gw:8317",   // inference relay works
+        "tag:fly-gw:3000"    // status tooling works
+      ],
+      "deny": [
+        "tag:fly-gw:22",     // no SSH between gateways
+        "tag:fly-gw:80",     // no unencrypted web
+        "tag:fly-gw:443"     // public HTTPS belongs on the fly edge, not tailnet
+      ]
+    }
+  ]
+}

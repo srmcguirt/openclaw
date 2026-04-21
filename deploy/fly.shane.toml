@@ -1,0 +1,87 @@
+# deploy/fly.shane.toml — Fly.io config for Shane's Adi.
+#
+# Canonical deploy (locally-built image, see deploy/DEPLOY.md §3–4):
+#   docker build -t openclaw:local .
+#   docker build -f deploy/Dockerfile.adi \
+#     --build-arg ADI_USER=shane \
+#     --build-arg UPSTREAM_IMAGE=openclaw:local \
+#     -t adi-shane:local .
+#   fly deploy -c deploy/fly.shane.toml --image adi-shane:local --local-only
+#
+# The [build] block below is documentation-only on the --image path.
+# It describes how a Fly-side remote build would be shaped if we ever
+# moved off the --local-only flow.
+#
+# If `adi-shane` is taken globally on Fly, change `app =` and `source =`
+# (volume name) together, keeping them consistent.
+
+app = "adi-shane"
+primary_region = "iad"
+
+[build]
+  dockerfile = "deploy/Dockerfile.adi"
+  [build.args]
+    ADI_USER = "shane"
+    OPENCLAW_EXTENSIONS = "slack telegram"
+
+[env]
+  NODE_ENV = "production"
+  OPENCLAW_PREFER_PNPM = "1"
+  OPENCLAW_STATE_DIR = "/data"
+  NODE_OPTIONS = "--max-old-space-size=1536"
+  # Agent memory via LanceDB on the volume. Second brain (Supabase) is
+  # wired separately via SUPABASE_URL + SUPABASE_SERVICE_KEY secrets.
+  OPENCLAW_AGENT_ID = "shane"
+
+[processes]
+  app = "/app/entrypoint.sh"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 50
+    soft_limit = 40
+
+[[http_service.checks]]
+  grace_period = "15s"
+  interval = "30s"
+  method = "GET"
+  timeout = "5s"
+  path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "4096mb"
+  # Bumped from 2048mb. 2GB left openclaw gateway + cliproxy sidecar +
+  # Node.js heap with no cold-start headroom — OOM kills produced silent
+  # "machine is alive but openclaw is dead" failures that looked like
+  # hangs. 4GB is the minimum that consistently boots under Fly iad load.
+
+[mounts]
+  source = "adi_shane_data"
+  destination = "/data"
+  initial_size = "10gb"
+
+# Optional: restrict which IPs can reach the control UI. Uncomment and
+# replace with your real public IPs (home, phone hotspot) to hide the UI
+# from internet scanners while keeping Slack/Telegram outbound working.
+# Discover your IP: curl -4 ifconfig.me
+#
+# [[services]]
+#   internal_port = 3000
+#   protocol = "tcp"
+#   [[services.ports]]
+#     port = 443
+#     handlers = ["http", "tls"]
+#   [[services.tcp_checks]]
+#     interval = "15s"
+#     timeout = "2s"
+#   # IP allowlist is configured via `fly ips allocate-v4 --shared` and a
+#   # dedicated Fly Edge Rule; see deploy/DEPLOY.md § "IP allowlist".

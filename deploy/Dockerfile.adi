@@ -1,0 +1,192 @@
+# deploy/Dockerfile.adi — thin overlay on openclaw's root Dockerfile.
+#
+# Why a separate Dockerfile:
+#   - The root Dockerfile is upstream openclaw's and we want to stay close to it.
+#   - We need to bake in Adi persona files and our custom entrypoint without
+#     modifying the upstream Dockerfile.
+#   - This file extends the upstream image by copying our persona artifacts in.
+#
+# Build args:
+#   ADI_USER — required, either "shane" or "meg". Controls which USER.md ships.
+#
+# Build:
+#   docker build -f deploy/Dockerfile.adi \
+#     --build-arg ADI_USER=shane \
+#     --build-arg OPENCLAW_EXTENSIONS="slack telegram" \
+#     -t adi-shane .
+#
+# The ADI_USER arg decides:
+#   - which USER.*.md is copied into the image as USER.md
+#   - whether Shane's appendices are included
+# The entrypoint then seeds the volume from these files on first boot.
+
+# ── Stage 1: build the upstream openclaw image ────────────────────
+# We use the root Dockerfile as-is (via the `build` stage's final output)
+# by copying its entire multi-stage build into our context.
+# Simpler: we point `build.dockerfile = "Dockerfile"` in fly.*.toml and
+# use THIS file only when building locally. The `fly.*.toml` files
+# reference this file, which extends the root image.
+
+# Reference the upstream openclaw image via a local build context.
+# Fly builds the root Dockerfile when invoked with it; we extend by
+# running an extra COPY pass after the upstream image is tagged.
+#
+# For local development / CI, build in two passes:
+#   docker build -t openclaw:local .
+#   docker build -f deploy/Dockerfile.adi --build-arg ADI_USER=shane -t adi-shane .
+
+ARG UPSTREAM_IMAGE=openclaw:local
+FROM ${UPSTREAM_IMAGE} AS adi
+
+ARG ADI_USER
+# Fail the build early if ADI_USER is unset
+RUN test -n "$ADI_USER" || (echo "ERROR: ADI_USER build arg is required (shane|meg)" >&2 && exit 1)
+
+USER root
+
+# ── CLIProxyAPI sidecar ────────────────────────────────────────────
+# Bake the CLIProxyAPI binary in at build time. OAuth-backed model
+# gateway that wraps Claude.ai / ChatGPT / Gemini OAuth sessions as
+# an OpenAI-compatible API. openclaw talks to it over loopback.
+#
+# Pin to a specific release for reproducibility. To update, bump
+# CLIPROXY_VERSION and verify the binary against upstream checksums.
+ARG CLIPROXY_VERSION=6.9.30
+ARG CLIPROXY_ARCH=amd64
+
+RUN set -eux; \
+    cd /tmp; \
+    curl -fsSL -o cliproxy.tar.gz \
+      "https://github.com/router-for-me/CLIProxyAPI/releases/download/v${CLIPROXY_VERSION}/CLIProxyAPI_${CLIPROXY_VERSION}_linux_${CLIPROXY_ARCH}.tar.gz"; \
+    tar -xzf cliproxy.tar.gz; \
+    # Release archive names the binary `cli-proxy-api` (lowercase, hyphens).
+    # Match either casing to stay resilient to any future rename.
+    cliproxy_bin="$(find . -maxdepth 2 -type f \( -name 'cli-proxy-api' -o -name 'CLIProxyAPI' \) -perm -u+x | head -n1)"; \
+    if [ -z "$cliproxy_bin" ]; then \
+      echo "ERROR: cliproxy binary not found in release archive" >&2; \
+      ls -la; \
+      exit 1; \
+    fi; \
+    install -m 0755 "$cliproxy_bin" /usr/local/bin/cliproxy; \
+    rm -rf cliproxy.tar.gz cli-proxy-api CLIProxyAPI* README* LICENSE* config.example.yaml 2>/dev/null || true; \
+    /usr/local/bin/cliproxy --help >/dev/null 2>&1 || \
+      echo "WARN: cliproxy --help nonzero; binary may still be functional via subcommand"
+
+# Seed config for CLIProxyAPI. Entrypoint copies this to the volume on
+# first boot, then the volume version is authoritative.
+COPY deploy/cliproxy.config.yaml /app/cliproxy.config.seed.yaml
+
+# ── Tailscale (family relay mesh) ──────────────────────────────────
+# adi-meg routes AI inference through adi-shane's CLIProxyAPI sidecar
+# over a private Tailscale mesh (see deploy/DEPLOY.md § 7.5). The
+# binaries ship in BOTH images; the entrypoint only activates the mesh
+# if the Fly secret TAILSCALE_AUTHKEY is set, so this is zero-cost for
+# deploys that skip the optional relay step.
+#
+# We run tailscaled in USERSPACE-NETWORKING mode (--tun=userspace-
+# networking). The container drops to non-root `node` below, so we
+# can't claim /dev/net/tun without privilege escalation. Userspace
+# mode trades some throughput for the ability to run unprivileged —
+# acceptable for sparse LLM API traffic. If throughput ever matters,
+# switch to TUN by running tailscaled as root with CAP_NET_ADMIN and
+# su-exec'ing openclaw.
+#
+# Pin to a specific release for reproducibility. Update by bumping
+# TAILSCALE_VERSION; check changelog at https://tailscale.com/changelog.
+ARG TAILSCALE_VERSION=1.80.2
+ARG TAILSCALE_ARCH=amd64
+
+RUN set -eux; \
+    cd /tmp; \
+    curl -fsSL -o tailscale.tgz \
+      "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_${TAILSCALE_ARCH}.tgz"; \
+    tar -xzf tailscale.tgz; \
+    install -m 0755 tailscale_${TAILSCALE_VERSION}_${TAILSCALE_ARCH}/tailscaled /usr/local/bin/tailscaled; \
+    install -m 0755 tailscale_${TAILSCALE_VERSION}_${TAILSCALE_ARCH}/tailscale  /usr/local/bin/tailscale; \
+    rm -rf tailscale.tgz tailscale_${TAILSCALE_VERSION}_${TAILSCALE_ARCH}; \
+    /usr/local/bin/tailscaled --version >/dev/null; \
+    /usr/local/bin/tailscale  version   >/dev/null; \
+    # Fallback state dirs on the container FS. Entrypoint actually points
+    # --state at /data/tailscale/tailscaled.state (persistent volume) so
+    # node identity survives redeploys. These dirs just prevent startup
+    # errors if someone runs the image without the /data volume mounted.
+    mkdir -p /var/run/tailscale /var/lib/tailscale; \
+    chown -R node:node /var/run/tailscale /var/lib/tailscale
+
+# ── GBrain (parked) ────────────────────────────────────────────────
+# GBrain integration via `openclaw plugins install` failed due to plugin
+# format mismatch (gbrain uses `family: bundle-plugin` with its own
+# openclaw.plugin.json manifest, but openclaw's installer expects
+# `openclaw.extensions` in package.json). Proper integration path is
+# likely via MCP server (gbrain ships `mcpServers.gbrain` in its manifest)
+# rather than as an installed plugin. Parking until a clean integration
+# plan lands. Supabase data remains intact; only the client is absent.
+
+# ── Adi plugin installs — TODO ─────────────────────────────────────
+# The openclaw-todoist-plugin is a community plugin that isn't bundled
+# with openclaw by default. We'd like it baked into the image but
+# `openclaw plugins install` writes to config state that doesn't exist
+# at image build time (no /data volume mount during build), so the
+# install silently no-ops.
+#
+# Current workaround: install via `fly ssh console` + `openclaw plugins
+# install openclaw-todoist-plugin` after first deploy. This survives
+# normal container restarts but is lost on full image redeploys.
+#
+# Proper fix (to do): seed the install into the entrypoint, which runs
+# when /data IS mounted. Pattern would be:
+#   - On first boot, if no /data/.openclaw/plugins/todoist marker exists,
+#     run `openclaw plugins install openclaw-todoist-plugin`
+#   - Write the marker so we don't re-install on every boot
+# Leaving this TODO here so we remember on the next deploy cycle.
+
+
+# Drop Adi persona files into a known image location. The entrypoint
+# reads from here and seeds the volume.
+RUN mkdir -p /app/adi-persona
+
+COPY config/personas/adi/IDENTITY.md /app/adi-persona/IDENTITY.md
+COPY config/personas/adi/SOUL.md     /app/adi-persona/SOUL.md
+COPY config/personas/adi/AGENTS.md   /app/adi-persona/AGENTS.md
+COPY config/personas/adi/FOXY.md     /app/adi-persona/FOXY.md
+
+# Copy the user-specific USER.md. ADI_USER selects which one.
+# If USER.${ADI_USER}.md isn't checked in (because the filled-in file is
+# gitignored), the build fails clearly — prompting the operator to seed
+# it before deploy.
+COPY config/personas/adi/USER.${ADI_USER}.md /app/adi-persona/USER.md
+
+# Shane's image also gets appendices. Meg's image does not, so we use
+# a pattern that tolerates absence. We copy a sentinel .keep file always
+# and conditionally copy appendices via a shell check at build time.
+COPY config/personas/adi/README.md /app/adi-persona/.keep
+
+# ── Per-user and shared memory files ──────────────────────────────
+# Memory files live under config/personas/adi/memory/{shane,meg,shared}/.
+# Each image gets:
+#   - that user's personal memory files  → /app/adi-persona/memory/
+#   - the shared household memory files  → /app/adi-persona/memory/shared/
+# At runtime the entrypoint syncs the whole tree to /data/.openclaw/memory/.
+#
+# Files are retrieved on demand by openclaw's builtin memory backend
+# (BM25 + optional vector search via sqlite-vec) when topics arise, not
+# loaded into every prompt. Keeps turn-by-turn prompt size small while
+# preserving deep context.
+RUN mkdir -p /app/adi-persona/memory /app/adi-persona/memory/shared
+COPY config/personas/adi/memory/${ADI_USER} /app/adi-persona/memory
+COPY config/personas/adi/memory/shared      /app/adi-persona/memory/shared
+
+# Copy the base openclaw config for this user.
+COPY deploy/openclaw.${ADI_USER}.json /app/adi-config.seed.json
+
+# Our custom entrypoint.
+COPY deploy/entrypoint.sh /app/entrypoint.sh
+RUN chmod 755 /app/entrypoint.sh && chown node:node /app/entrypoint.sh
+
+# Record which user this image is for (operator-facing label).
+LABEL ai.openclaw.adi.user="${ADI_USER}"
+
+USER node
+
+# Override the upstream CMD with our entrypoint.
+ENTRYPOINT ["/app/entrypoint.sh"]

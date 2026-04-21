@@ -1,0 +1,67 @@
+{
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "cliproxy/claude-sonnet-4-6",
+        "fallbacks": [
+          "cliproxy/claude-opus-4-6",
+          "anthropic/claude-sonnet-4-6",
+          "anthropic/claude-opus-4-6"
+        ]
+      }
+    },
+    "list": [
+      {
+        "id": "main",
+        "name": "Meg's Adi",
+        "default": true,
+        "workspace": "/data/.openclaw/workspace"
+      }
+    ]
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "cliproxy": {
+        "baseUrl": "http://adi-shane.${TAILNET_DOMAIN}:8317/v1",
+        "apiKey": "${CLIPROXY_API_KEY}",
+        "api": "openai-completions",
+        "models": [
+          { "id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (via Shane's CLIProxy)" },
+          { "id": "claude-opus-4-6", "name": "Claude Opus 4.6 (via Shane's CLIProxy)" },
+          { "id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5 (via Shane's CLIProxy)" }
+        ]
+      }
+    }
+  },
+  "bindings": [
+    { "agentId": "main", "match": { "channel": "slack" } },
+    { "agentId": "main", "match": { "channel": "telegram" } }
+  ],
+  "channels": {
+    "slack": {
+      "enabled": true,
+      "allowFrom": ["U0ATQKX5ZGD"]
+    },
+    "telegram": {
+      "enabled": true,
+      "allowFrom": ["8636712032"]
+    }
+  },
+  "plugins": {
+    "allow": ["todoist", "slack", "telegram"],
+    "entries": {
+      "todoist": {
+        "enabled": true,
+        "config": {}
+      },
+      "memory-core": {
+        "enabled": false
+      }
+    }
+  },
+  "gateway": {
+    "mode": "local",
+    "bind": "auto"
+  }
+}
