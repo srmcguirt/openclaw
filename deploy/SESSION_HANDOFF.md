@@ -2,7 +2,7 @@
 
 > **If you're a new session picking this up:** read this file first, then skim `DEPLOY.md` (deploy runbook), `PRIVACY_MODEL.md` (architecture rationale), and `README.md` (file inventory). Check `git log --oneline -5` to see recent commits. You should be able to pick up cleanly without me briefing you.
 
-Last updated: 2026-04-21, end of second working session. Operator stepped away due to cognitive fatigue from two long debug cycles; handing off cleanly is the right move.
+Last updated: 2026-04-21, **end of third session — tailnet relay VERIFIED end-to-end.** Meg's Adi successfully routed `/v1/chat/completions` through cliproxy → Tailscale (DERP-27/iad) → Shane's CLIProxyAPI → Claude.ai OAuth, returning "PONG". See §7.5j in DEPLOY.md for the five non-obvious gotchas.
 
 ---
 
@@ -15,8 +15,16 @@ Last updated: 2026-04-21, end of second working session. Operator stepped away d
 **Known broken (non-blocking):**
 - **Meg's Telegram** keeps re-issuing pairing codes despite correct `allowFrom` entries in both the repo config and the on-disk allowlist (`/data/credentials/telegram-default-allowFrom.json` with user ID `8636712032`). We spent a long time on it. Final theory: stale in-memory allowlist cache that doesn't re-read after approval, and our fresh-config reseed didn't propagate correctly on the last restart. See **Known quirks** below.
 
-**Not done yet:**
-- **Tailnet family relay deploy** (§7.5 in DEPLOY.md). Designed + image-ready + config-ready. Needs operator actions: create tailnet, apply ACL, mint 2 auth keys, set 4 Fly secrets, rebuild both images, redeploy. ~60–90 min of focused operator work.
+**Done — tailnet relay verified:**
+- Tailnet `springhare-typhon.ts.net` created
+- ACL applied (`deploy/tailscale-acl.json`): meg→shane:8317, shane→meg:3000
+- Both nodes registered: adi-shane (100.111.92.71), adi-meg (100.105.167.27)
+- Required secrets set on both: `TAILSCALE_AUTHKEY`, `CLIPROXY_API_KEY` (shared), `SHANE_TAILNET_IP` (on Meg), `ADI_MEG_GATEWAY_TOKEN` (on Shane)
+- Meg's `openclaw.json` has `models.providers.cliproxy.request.{allowPrivateNetwork:true, proxy:{mode:"explicit-proxy",url:"http://127.0.0.1:1055"}}`
+- Verified: Meg returns "PONG" via cliproxy/claude-sonnet-4-6 → Shane's Claude.ai OAuth.
+
+**Stale artifact to clean up (non-blocking):**
+- `adi-shane-1` node in Tailscale admin is dead/offline (leftover from an early mis-hostname deploy). Delete via Tailscale admin → Machines → adi-shane-1 → Delete.
 
 **Parked (do NOT retry without plan):**
 - **gbrain integration.** Tried `openclaw plugins install /opt/gbrain` — fails because gbrain's `openclaw.plugin.json` uses `family: bundle-plugin` format but openclaw's installer expects `openclaw.extensions` in `package.json`. The proper integration path is via gbrain's **MCP server** (`mcpServers.gbrain` in its manifest), which requires different wiring. Supabase data is intact; client is absent. Don't retry the plugins-install path — it's a dead end.

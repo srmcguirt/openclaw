@@ -395,9 +395,15 @@ fly secrets set TAILSCALE_AUTHKEY=tskey-auth-MEGS_KEY   -a adi-meg
 Meg's box needs three new secrets beyond her original Phase 1a set:
 
 ```bash
-# (1) The tailnet domain so her openclaw.meg.json substitutes the right
-#     URL. Value is YOUR tailnet's MagicDNS suffix (tail1abcd.ts.net).
-fly secrets set TAILNET_DOMAIN=tail1abcd.ts.net -a adi-meg
+# (1) Shane's tailnet IP (for cliproxy baseUrl). We use a raw IP rather
+#     than MagicDNS because Fly containers don't support Tailscale's
+#     DNS takeover. Non-ephemeral keys + persistent state keep this
+#     stable across redeploys.
+#
+#     After Shane's first deploy, grab his IP:
+fly ssh console -a adi-shane -C "tailscale --socket=/data/tailscale/tailscaled.sock ip -4"
+#     Typical value looks like 100.111.92.71.
+fly secrets set SHANE_TAILNET_IP=100.111.92.71 -a adi-meg
 
 # (2) The CLIProxyAPI key Shane's box uses — both sides MUST match.
 #     Grab it from Shane's machine first:
@@ -491,6 +497,14 @@ If Meg's logs show `anthropic/*` instead of `cliproxy/*`, the relay didn't reach
 - **Revoke Meg:** Tailscale admin → **Machines** → adi-meg → **Disable**. Meg's openclaw immediately falls back to Anthropic (per her fallback list).
 - **If Shane's Claude.ai OAuth is suspended:** Shane's own CLIProxyAPI stops working, which means Meg's relay stops working, which means both of your Adis fall back to Anthropic. Neither is dead — both just get more expensive.
 - **Do not add this to `/healthz`:** a full model round-trip belongs in a separate deeper health check, not the Fly liveness probe.
+
+### 7.5j. Known quirks learned from the first deploy
+
+- **CGNAT/SSRF guard:** openclaw's fetch guard blocks 100.64.0.0/10 (RFC 6598, where Tailscale lives) by default. `models.providers.cliproxy.request.allowPrivateNetwork: true` is the per-provider opt-in that lets this work. This is already baked into `deploy/openclaw.meg.json` — don't remove it.
+- **No MagicDNS on Fly containers:** Fly machines refuse tailscaled's DNS takeover (`getting OS base config is not supported`). Using `--accept-dns=true` partially corrupts the resolver config and destabilizes openclaw's undici dispatcher (Slack socket-mode pongs time out, Anthropic stalls). We use raw tailnet IPs instead; the hostname fallback is not an option on this platform.
+- **Do NOT set HTTP_PROXY globally:** tempting, but it routes ALL outbound through the tailnet proxy (Slack/Telegram/Anthropic included) and stalls everything. Use the provider-scoped `request.proxy.url` config on `models.providers.cliproxy` instead — leaves other providers on their normal network path.
+- **openclaw's `/v1/chat/completions` endpoint is disabled by default.** To reproduce the e2e smoke-test above, temporarily enable it on Meg's volume with `fly ssh console -a adi-meg -C "node -e '...gateway.http.endpoints.chatCompletions={enabled:true}...'"` then restart, then disable it again. Don't leave it on — it's a full operator-access surface (see `docs/gateway/openai-http-api.md`).
+- **memory-core is disabled on BOTH boxes.** It hangs gateway startup if it needs to build an index. Don't re-enable without a plan for why that's safe.
 
 
 
