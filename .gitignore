@@ -102,6 +102,15 @@ USER.md
 /local/
 package-lock.json
 .claude/
+
+# Adi personal — family-specific content that references Shane, Meg,
+# kids, household, workspaces, etc. Adi's persona-as-character files
+# (IDENTITY.md, SOUL.md, AGENTS.md, FOXY.md, BRAND.md) stay tracked
+# because they're generic to the fox character, not the McGuirt family.
+deploy/SESSION_HANDOFF*.md
+deploy/slack-app.*.manifest.json
+config/personas/adi/memory/shared/
+config/personas/adi/README.md
 .agent/
 skills-lock.json
 
