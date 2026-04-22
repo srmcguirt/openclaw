@@ -260,20 +260,34 @@ If it's not running, check `/data/cliproxy/config.yaml` and `/data/cliproxy/clip
 
 ### 6c. Run OAuth login for each provider you want to use
 
-CLIProxyAPI ships interactive login subcommands. Inside the SSH session:
+CLIProxyAPI uses **flags**, not subcommands. Inside the SSH session:
 
 ```bash
-# Claude.ai (uses Shane's Claude.ai Pro session)
-cliproxy --config /data/cliproxy/config.yaml login claude
+# Claude.ai (uses Shane's Claude.ai Pro session). -no-browser is required
+# because this is a headless Fly container — we paste the URL into a
+# browser on your laptop instead of trying to open one here.
+cliproxy -config /data/cliproxy/config.yaml -claude-login -no-browser
 
-# ChatGPT (uses Shane's ChatGPT Plus session)
-cliproxy --config /data/cliproxy/config.yaml login openai
+# ChatGPT / Codex (uses Shane's ChatGPT Plus session)
+cliproxy -config /data/cliproxy/config.yaml -codex-login -no-browser
 
-# Gemini (uses Shane's Google account)
-cliproxy --config /data/cliproxy/config.yaml login gemini
+# Gemini / Google (uses Shane's Google account)
+cliproxy -config /data/cliproxy/config.yaml -login -no-browser
 ```
 
-Each command prints a URL. Open the URL on your laptop, sign in with **Shane's** account, paste the resulting token/code back into the SSH session as prompted. Tokens land in `/data/cliproxy/auth/` on the volume and persist across redeploys.
+Each command prints a URL. Open the URL on your laptop (already logged into Shane's account), authorize, paste the resulting code back into the SSH session as prompted. Tokens land in `/data/cliproxy/auth/` on the volume and persist across redeploys.
+
+**Common pitfall:** the DEPLOY docs used to say `cliproxy login claude` (subcommand form). That's wrong — cliproxy takes `-claude-login` as a flag. `cliproxy --help` shows the full flag list.
+
+**Also important:** use PowerShell or CMD on Windows, not Git Bash. `fly ssh console` in Git Bash produces "The handle is invalid" errors on interactive flows that break the OAuth paste step.
+
+**Restart after login** so the sidecar picks up the new token — easiest is from your local shell:
+
+```bash
+fly machine restart <machine-id> -a adi-shane
+```
+
+Or inside the SSH session before you exit: `pkill cliproxy` (entrypoint-node.sh won't auto-restart it, so you'll still need a `fly machine restart` — but pkill is useful if you want to verify the current process dies cleanly).
 
 **Important:** you're logging in as Shane on Shane's machine. Do **not** use Meg's accounts here.
 
@@ -289,13 +303,17 @@ You should see the proxy receiving and forwarding the request. If Adi is still r
 
 ### 6e. Repeat for Meg
 
+Skip this section if you're doing the §7.5 tailnet relay — Meg routes
+through Shane's cliproxy rather than running her own. Only do these if
+Meg will run standalone:
+
 ```bash
 fly ssh console -a adi-meg
 
-# Then inside Meg's session:
-cliproxy --config /data/cliproxy/config.yaml login claude
-cliproxy --config /data/cliproxy/config.yaml login openai
-cliproxy --config /data/cliproxy/config.yaml login gemini
+# Then inside Meg's session (same flag syntax as Shane's):
+cliproxy -config /data/cliproxy/config.yaml -claude-login -no-browser
+cliproxy -config /data/cliproxy/config.yaml -codex-login -no-browser
+cliproxy -config /data/cliproxy/config.yaml -login -no-browser
 ```
 
 **Using Meg's accounts this time.** Shane's and Meg's OAuth tokens live on different Fly volumes and never cross.
