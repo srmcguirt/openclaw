@@ -498,13 +498,30 @@ If Meg's logs show `anthropic/*` instead of `cliproxy/*`, the relay didn't reach
 - **If Shane's Claude.ai OAuth is suspended:** Shane's own CLIProxyAPI stops working, which means Meg's relay stops working, which means both of your Adis fall back to Anthropic. Neither is dead — both just get more expensive.
 - **Do not add this to `/healthz`:** a full model round-trip belongs in a separate deeper health check, not the Fly liveness probe.
 
-### 7.5j. Known quirks learned from the first deploy
+### 7.5j. Known quirks learned during this deploy
 
-- **CGNAT/SSRF guard:** openclaw's fetch guard blocks 100.64.0.0/10 (RFC 6598, where Tailscale lives) by default. `models.providers.cliproxy.request.allowPrivateNetwork: true` is the per-provider opt-in that lets this work. This is already baked into `deploy/openclaw.meg.json` — don't remove it.
-- **No MagicDNS on Fly containers:** Fly machines refuse tailscaled's DNS takeover (`getting OS base config is not supported`). Using `--accept-dns=true` partially corrupts the resolver config and destabilizes openclaw's undici dispatcher (Slack socket-mode pongs time out, Anthropic stalls). We use raw tailnet IPs instead; the hostname fallback is not an option on this platform.
-- **Do NOT set HTTP_PROXY globally:** tempting, but it routes ALL outbound through the tailnet proxy (Slack/Telegram/Anthropic included) and stalls everything. Use the provider-scoped `request.proxy.url` config on `models.providers.cliproxy` instead — leaves other providers on their normal network path.
-- **openclaw's `/v1/chat/completions` endpoint is disabled by default.** To reproduce the e2e smoke-test above, temporarily enable it on Meg's volume with `fly ssh console -a adi-meg -C "node -e '...gateway.http.endpoints.chatCompletions={enabled:true}...'"` then restart, then disable it again. Don't leave it on — it's a full operator-access surface (see `docs/gateway/openai-http-api.md`).
-- **memory-core is disabled on BOTH boxes.** It hangs gateway startup if it needs to build an index. Don't re-enable without a plan for why that's safe.
+- **CGNAT/SSRF guard:** openclaw's fetch guard blocks 100.64.0.0/10 (RFC 6598, where Tailscale lives) by default. `models.providers.cliproxy.request.allowPrivateNetwork: true` is the per-provider opt-in that lets this work. Already baked into `deploy/openclaw.meg.json` — don't remove it.
+- **Userspace-networking mode is a dead end for openclaw.** We tried `tailscaled --tun=userspace-networking` + `--outbound-http-proxy-listen=127.0.0.1:1055` + `request.proxy.url` on the provider. `curl --proxy ...` works correctly via this setup. openclaw's undici ProxyAgent does NOT — every call fails with "network connection error" and falls through to Anthropic fallback. We haven't root-caused the undici+ProxyAgent+Tailscale-userspace interaction; the fix was to switch to TUN mode.
+- **TUN mode requires root startup.** Our entrypoint now starts as `root`, brings up `tailscaled` with native `/dev/net/tun` access (Fly Firecracker microVMs expose it), then `runuser -u node -- exec` openclaw to drop privilege. Final Dockerfile ends with `USER root` (not `USER node`); the entrypoint does `chown -R node:node /data` on every boot so any `fly ssh console` root-owned artifacts self-heal.
+- **No MagicDNS on Fly containers:** Fly refuses tailscaled's DNS takeover (`getting OS base config is not supported`). `--accept-dns=true` partially corrupts the resolver config. We use raw tailnet IPs instead; `SHANE_TAILNET_IP` secret carries Shane's 100.x IP.
+- **Do NOT set HTTP_PROXY globally:** it routes ALL outbound (Slack/Telegram/Anthropic) through the tailnet proxy and stalls everything.
+- **openclaw's `/v1/chat/completions` endpoint is disabled by default.** To reproduce the e2e smoke-test, enable it on Meg's volume with a `fly ssh console` node one-liner, restart, test, then disable.
+- **memory-core is disabled on BOTH boxes.** It hangs gateway startup if it needs to build an index. Don't re-enable without a plan.
+
+### 7.5k. How to verify the relay actually works
+
+Log-count diff on Shane is the ground truth (openclaw's `provider=cliproxy` in error logs reports the *attempted* provider, not what actually served the response):
+
+```bash
+# Before:
+fly ssh console -a adi-shane -C "wc -l /data/cliproxy/cliproxy.log"
+# Fire a request via Meg's /v1/chat/completions (endpoint must be enabled).
+# After:
+fly ssh console -a adi-shane -C "wc -l /data/cliproxy/cliproxy.log"
+# Count MUST grow for each successful relay. Also check openclaw logs:
+fly logs -a adi-meg --no-tail | grep model-fallback
+# Expect: decision=candidate_succeeded candidate=cliproxy/... (NOT anthropic/...)
+```
 
 
 

@@ -27,11 +27,7 @@
         "apiKey": "${CLIPROXY_API_KEY}",
         "api": "openai-completions",
         "request": {
-          "allowPrivateNetwork": true,
-          "proxy": {
-            "mode": "explicit-proxy",
-            "url": "http://127.0.0.1:1055"
-          }
+          "allowPrivateNetwork": true
         },
         "models": [
           { "id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (via Shane's CLIProxy)" },

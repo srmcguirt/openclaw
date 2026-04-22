@@ -184,14 +184,37 @@ COPY config/personas/adi/memory/shared      /app/adi-persona/memory/shared
 # Copy the base openclaw config for this user.
 COPY deploy/openclaw.${ADI_USER}.json /app/adi-config.seed.json
 
-# Our custom entrypoint.
+# Our custom entrypoints.
+#
+# entrypoint.sh runs as root (needed for tailscaled to claim /dev/net/tun
+# in native TUN mode). It does root-only setup and execs into
+# entrypoint-node.sh via `runuser -u node` to drop privilege before
+# starting openclaw and the cliproxy sidecar.
+#
+# Both scripts must be readable+executable by root (entrypoint.sh) and
+# by node (entrypoint-node.sh and its reads). They're in /app which
+# is already chown'd node:node further up the stack.
 COPY deploy/entrypoint.sh /app/entrypoint.sh
-RUN chmod 755 /app/entrypoint.sh && chown node:node /app/entrypoint.sh
+COPY deploy/entrypoint-node.sh /app/entrypoint-node.sh
+RUN chmod 755 /app/entrypoint.sh /app/entrypoint-node.sh && \
+    chown node:node /app/entrypoint.sh /app/entrypoint-node.sh
+
+# Verify `runuser` (util-linux) is available for the privilege-drop in
+# entrypoint.sh. Debian bookworm ships it by default, but fail-fast if
+# a future base image strips it.
+RUN command -v runuser >/dev/null 2>&1 || \
+    (echo "ERROR: runuser not found — required for root→node privilege drop in entrypoint.sh" >&2 && exit 1)
 
 # Record which user this image is for (operator-facing label).
 LABEL ai.openclaw.adi.user="${ADI_USER}"
 
-USER node
+# IMPORTANT: The image ENTRYPOINT runs as ROOT (no final `USER node`).
+# tailscaled needs root to claim /dev/net/tun for TUN mode. The
+# entrypoint.sh drops to `node` via `runuser` before execing openclaw,
+# so the Node.js gateway process itself never runs with root privileges.
+# Do NOT add `USER node` here without switching tailscaled to userspace
+# networking — which fails to route openclaw's undici ProxyAgent traffic
+# (see deploy/DEPLOY.md §7.5j).
 
 # Override the upstream CMD with our entrypoint.
 ENTRYPOINT ["/app/entrypoint.sh"]

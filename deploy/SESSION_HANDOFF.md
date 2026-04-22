@@ -2,7 +2,13 @@
 
 > **If you're a new session picking this up:** read this file first, then skim `DEPLOY.md` (deploy runbook), `PRIVACY_MODEL.md` (architecture rationale), and `README.md` (file inventory). Check `git log --oneline -5` to see recent commits. You should be able to pick up cleanly without me briefing you.
 
-Last updated: 2026-04-21, **end of third session — tailnet relay VERIFIED end-to-end.** Meg's Adi successfully routed `/v1/chat/completions` through cliproxy → Tailscale (DERP-27/iad) → Shane's CLIProxyAPI → Claude.ai OAuth, returning "PONG". See §7.5j in DEPLOY.md for the five non-obvious gotchas.
+Last updated: 2026-04-22, **end of third session — tailnet relay is NOT yet working end-to-end.**
+
+**CORRECTION to earlier claims in this file:** the "PONG" / "PING" response tests returned successfully, but verification via Shane's CLIProxyAPI log line count showed the traffic never reached him — openclaw's `model-fallback/decision` logs confirmed the calls were satisfied by **Anthropic fallback** (Meg's own key) after the cliproxy attempt failed with "network connection error". Shane's Claude.ai OAuth was NOT consumed.
+
+The issue is userspace-networking + undici's ProxyAgent: the HTTP proxy at 127.0.0.1:1055 forwards `curl` traffic correctly, but openclaw's fetch path fails to reach Shane's tailnet IP through it.
+
+**Next-session plan (in progress as of this handoff write):** refactor to TUN mode — container starts as root, tailscaled runs as root with native /dev/net/tun, entrypoint `runuser`s down to `node` before execing openclaw. Eliminates the userspace-proxy hop entirely; normal sockets see the tailnet directly. See DEPLOY.md §7.5j for the updated gotcha list.
 
 ---
 
@@ -15,16 +21,17 @@ Last updated: 2026-04-21, **end of third session — tailnet relay VERIFIED end-
 **Known broken (non-blocking):**
 - **Meg's Telegram** keeps re-issuing pairing codes despite correct `allowFrom` entries in both the repo config and the on-disk allowlist (`/data/credentials/telegram-default-allowFrom.json` with user ID `8636712032`). We spent a long time on it. Final theory: stale in-memory allowlist cache that doesn't re-read after approval, and our fresh-config reseed didn't propagate correctly on the last restart. See **Known quirks** below.
 
-**Done — tailnet relay verified:**
+**Done — tailnet infra is live but relay is not yet functional:**
 - Tailnet `springhare-typhon.ts.net` created
 - ACL applied (`deploy/tailscale-acl.json`): meg→shane:8317, shane→meg:3000
 - Both nodes registered: adi-shane (100.111.92.71), adi-meg (100.105.167.27)
+- Stale `adi-shane-1` has been cleaned up.
 - Required secrets set on both: `TAILSCALE_AUTHKEY`, `CLIPROXY_API_KEY` (shared), `SHANE_TAILNET_IP` (on Meg), `ADI_MEG_GATEWAY_TOKEN` (on Shane)
-- Meg's `openclaw.json` has `models.providers.cliproxy.request.{allowPrivateNetwork:true, proxy:{mode:"explicit-proxy",url:"http://127.0.0.1:1055"}}`
-- Verified: Meg returns "PONG" via cliproxy/claude-sonnet-4-6 → Shane's Claude.ai OAuth.
+- Tailnet is verified reachable: `curl --proxy http://127.0.0.1:1055 http://100.111.92.71:8317/` from Meg returns Shane's CLIProxyAPI banner.
 
-**Stale artifact to clean up (non-blocking):**
-- `adi-shane-1` node in Tailscale admin is dead/offline (leftover from an early mis-hostname deploy). Delete via Tailscale admin → Machines → adi-shane-1 → Delete.
+**NOT done yet — the blocker:**
+- openclaw's undici ProxyAgent + userspace-networking mode doesn't route fetch traffic through the tailnet. Every cliproxy attempt logs "network connection error" and falls through to Anthropic.
+- Fix in progress: switch to TUN mode (see DEPLOY.md §7.5j and the next git commits).
 
 **Parked (do NOT retry without plan):**
 - **gbrain integration.** Tried `openclaw plugins install /opt/gbrain` — fails because gbrain's `openclaw.plugin.json` uses `family: bundle-plugin` format but openclaw's installer expects `openclaw.extensions` in `package.json`. The proper integration path is via gbrain's **MCP server** (`mcpServers.gbrain` in its manifest), which requires different wiring. Supabase data is intact; client is absent. Don't retry the plugins-install path — it's a dead end.
