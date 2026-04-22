@@ -2,13 +2,31 @@
 
 > **If you're a new session picking this up:** read this file first, then skim `DEPLOY.md` (deploy runbook), `PRIVACY_MODEL.md` (architecture rationale), and `README.md` (file inventory). Check `git log --oneline -5` to see recent commits. You should be able to pick up cleanly without me briefing you.
 
-Last updated: 2026-04-22, **end of third session — tailnet relay is NOT yet working end-to-end.**
+Last updated: 2026-04-22, **end of third session — tailnet relay genuinely verified end-to-end.**
 
-**CORRECTION to earlier claims in this file:** the "PONG" / "PING" response tests returned successfully, but verification via Shane's CLIProxyAPI log line count showed the traffic never reached him — openclaw's `model-fallback/decision` logs confirmed the calls were satisfied by **Anthropic fallback** (Meg's own key) after the cliproxy attempt failed with "network connection error". Shane's Claude.ai OAuth was NOT consumed.
+The inference relay (Meg's openclaw → Tailscale → Shane's CLIProxyAPI → Shane's Claude.ai Pro OAuth → Anthropic) now works, proven by:
 
-The issue is userspace-networking + undici's ProxyAgent: the HTTP proxy at 127.0.0.1:1055 forwards `curl` traffic correctly, but openclaw's fetch path fails to reach Shane's tailnet IP through it.
+- Shane's cliproxy main.log at `/data/cliproxy/auth/logs/main.log` shows:
+  ```
+  [2026-04-22 01:25:00] [48dc3dff] [info] [gin_logger.go:93]
+    200 | 2.093s | 100.105.167.27 | POST "/v1/chat/completions"
+  ```
+  `100.105.167.27` is Meg's tailnet IP. The request came from Meg, over the mesh, and was served successfully in 2s.
 
-**Next-session plan (in progress as of this handoff write):** refactor to TUN mode — container starts as root, tailscaled runs as root with native /dev/net/tun, entrypoint `runuser`s down to `node` before execing openclaw. Eliminates the userspace-proxy hop entirely; normal sockets see the tailnet directly. See DEPLOY.md §7.5j for the updated gotcha list.
+- Preceding log line confirms Shane's OAuth was used, not fallback:
+  ```
+  [conductor.go:3323] Use OAuth provider=claude
+    auth_file=claude-srmcguirt@gmail.com.json for model claude-sonnet-4-6
+  ```
+
+- Meg's logs show no `model-fallback/decision` event for the request —
+  meaning the cliproxy route succeeded on first attempt, not via Anthropic fallback.
+
+**What made it work:**
+1. Switched tailscaled from userspace-networking to native TUN mode (commit `7f7c63fdb7`). Required container to start as root + drop to node via `runuser` before openclaw exec. Eliminated openclaw's undici ProxyAgent vs userspace-proxy incompatibility.
+2. `models.providers.cliproxy.request.allowPrivateNetwork: true` in Meg's config. openclaw's SSRF guard blocks 100.64.0.0/10 (CGNAT, where Tailscale lives) by default.
+3. Raw tailnet IP in baseUrl (`http://${SHANE_TAILNET_IP}:8317/v1`) rather than MagicDNS. Fly containers refuse tailscaled's DNS takeover.
+4. Shane's Claude.ai OAuth re-authed via `cliproxy -config ... -claude-login -no-browser` — the original session had expired. This is a recurring chore when tokens rotate.
 
 ---
 
@@ -21,17 +39,28 @@ The issue is userspace-networking + undici's ProxyAgent: the HTTP proxy at 127.0
 **Known broken (non-blocking):**
 - **Meg's Telegram** keeps re-issuing pairing codes despite correct `allowFrom` entries in both the repo config and the on-disk allowlist (`/data/credentials/telegram-default-allowFrom.json` with user ID `8636712032`). We spent a long time on it. Final theory: stale in-memory allowlist cache that doesn't re-read after approval, and our fresh-config reseed didn't propagate correctly on the last restart. See **Known quirks** below.
 
-**Done — tailnet infra is live but relay is not yet functional:**
-- Tailnet `springhare-typhon.ts.net` created
-- ACL applied (`deploy/tailscale-acl.json`): meg→shane:8317, shane→meg:3000
-- Both nodes registered: adi-shane (100.111.92.71), adi-meg (100.105.167.27)
-- Stale `adi-shane-1` has been cleaned up.
-- Required secrets set on both: `TAILSCALE_AUTHKEY`, `CLIPROXY_API_KEY` (shared), `SHANE_TAILNET_IP` (on Meg), `ADI_MEG_GATEWAY_TOKEN` (on Shane)
-- Tailnet is verified reachable: `curl --proxy http://127.0.0.1:1055 http://100.111.92.71:8317/` from Meg returns Shane's CLIProxyAPI banner.
+**Done — tailnet relay is live and verified:**
+- Tailnet `springhare-typhon.ts.net` created, ACL in `deploy/tailscale-acl.json`.
+- Both nodes on tailnet: adi-shane (100.111.92.71), adi-meg (100.105.167.27). `tag:fly-gw`.
+- Stale `adi-shane-1` cleaned up.
+- Secrets set: `TAILSCALE_AUTHKEY` (each box), `CLIPROXY_API_KEY` (shared), `SHANE_TAILNET_IP` (on Meg), `ADI_MEG_GATEWAY_TOKEN` (on Shane).
+- Container runs as root for tailscaled's TUN mode, then `runuser`s to node for openclaw. See `deploy/entrypoint.sh` (root) + `deploy/entrypoint-node.sh` (node).
+- Shane's Claude.ai OAuth refreshed (Apr 22). File at `/data/cliproxy/auth/claude-srmcguirt@gmail.com.json`.
 
-**NOT done yet — the blocker:**
-- openclaw's undici ProxyAgent + userspace-networking mode doesn't route fetch traffic through the tailnet. Every cliproxy attempt logs "network connection error" and falls through to Anthropic.
-- Fix in progress: switch to TUN mode (see DEPLOY.md §7.5j and the next git commits).
+**Recurring chore:**
+- When Shane's Claude.ai OAuth expires (irregular cadence, maybe weekly-to-monthly), the whole relay stops working. Shane's own Adi will fall back to Anthropic API too (both users' traffic goes through the same session). Re-auth:
+  ```powershell
+  fly ssh console -a adi-shane
+  ```
+  ```bash
+  cliproxy -config /data/cliproxy/config.yaml -claude-login -no-browser
+  ```
+  Paste printed URL into a browser logged into Shane's Claude.ai, complete auth, paste code back.
+  Then `exit` the ssh, and from local shell: `fly machine restart 287397eae6e508 -a adi-shane`.
+- Signal: Meg's openclaw logs show `503 auth_unavailable: no auth available (providers=claude...)` in fallback decisions, or Shane's own Adi starts falling back to Anthropic.
+
+**Known quirk still open:**
+- Meg's Telegram allowlist issue (from first session) — unknown if the TUN-mode redeploy resolved it. Worth a real DM test from Meg when Shane's around.
 
 **Parked (do NOT retry without plan):**
 - **gbrain integration.** Tried `openclaw plugins install /opt/gbrain` — fails because gbrain's `openclaw.plugin.json` uses `family: bundle-plugin` format but openclaw's installer expects `openclaw.extensions` in `package.json`. The proper integration path is via gbrain's **MCP server** (`mcpServers.gbrain` in its manifest), which requires different wiring. Supabase data is intact; client is absent. Don't retry the plugins-install path — it's a dead end.
